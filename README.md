@@ -5,12 +5,19 @@ A Retrieval-Augmented Generation app that answers questions from a PDF
 (the survey *"Retrieval-Augmented Generation for Large Language Models: A Survey"*).
 
 Pipeline: PDF loading -> text extraction -> chunking -> embeddings -> Chroma vector DB
--> similarity search -> neighbor-chunk expansion -> LLM answer grounded in the retrieved context
--> answer returned with page and chunk references through a FastAPI `POST /ask` endpoint.
+-> hybrid search (BM25 + dense) -> cross-encoder reranking -> neighbor-chunk expansion -> LLM answer
+grounded in the retrieved context -> answer returned with page and chunk references through a
+FastAPI `POST /ask` endpoint. The query flow is orchestrated as a **LangGraph** workflow.
 
 ```
-PDF -> PyPDFLoader -> strip References -> RecursiveCharacterTextSplitter -> HF Embeddings (MiniLM) -> ChromaDB
-Question -> embed -> top-k similarity search -> add neighboring chunks -> prompt(context + question) -> Groq LLM -> answer + sources
+Indexing: PDF -> PyPDFLoader -> strip References -> RecursiveCharacterTextSplitter -> HF Embeddings (MiniLM) -> ChromaDB
+
+Query (LangGraph):
+  retrieve (BM25 + dense, fused with RRF)
+      -> rerank (cross-encoder)
+      -> route --[top score >= threshold]--> build_context (neighbor chunks) --+
+             \--[top score <  threshold]--> web_search (LLM tool calling,      |
+                                            Wikipedia API)  ------------------+--> generate -> answer + sources
 ```
 
 ## Tech Stack
@@ -18,7 +25,10 @@ Question -> embed -> top-k similarity search -> add neighboring chunks -> prompt
 - FastAPI + Uvicorn
 - LangChain (document loaders, text splitters, prompts, chains)
 - PyPDF (PDF text extraction)
-- sentence-transformers `all-MiniLM-L6-v2` (embeddings)
+- LangGraph (workflow), LangSmith (optional tracing)
+- sentence-transformers `all-MiniLM-L6-v2` (embeddings) and `cross-encoder/ms-marco-MiniLM-L-6-v2` (reranker)
+- rank-bm25 (keyword search for hybrid retrieval)
+- Wikipedia API (web tool, no API key needed)
 - ChromaDB (vector database)
 - Groq API with `openai/gpt-oss-20b` (LLM)
 
@@ -33,7 +43,7 @@ pip install -r requirements.txt
 ```
 Open `.env` and set your `GROQ_API_KEY` (free key at console.groq.com).
 The PDF is included at `data/rag_survey.pdf`; change `PDF_PATH` in `.env` to use another file.
-The first run downloads the embedding model (about 90 MB).
+The first run downloads the embedding model (about 90 MB) and the reranker (about 90 MB).
 
 ## Run the FastAPI Server
 ```bash
@@ -51,19 +61,31 @@ Request:
 ```json
 { "question": "What is Retrieval-Augmented Generation?" }
 ```
-Response:
+Response (answer found in the PDF):
 ```json
 {
   "answer": "...",
+  "route": "document",
   "sources": [
-    { "page": 1, "chunk_id": 0, "score": 0.74, "snippet": "..." }
+    { "type": "document", "page": 1, "chunk_id": 0, "score": 7.31, "snippet": "..." }
   ]
 }
 ```
+Response (question not covered by the PDF, answered through the Wikipedia tool):
+```json
+{
+  "answer": "Not found in the PDF - based on Wikipedia: ...",
+  "route": "web",
+  "sources": [
+    { "type": "web", "title": "Paris", "url": "https://en.wikipedia.org/wiki/Paris", "snippet": "..." }
+  ]
+}
+```
+- `route`: `document` (answered from the PDF) or `web` (PDF had no confident match, web tool used)
 - `page`: page number in the PDF (1-based)
 - `chunk_id`: index of the chunk in the vector store
-- `score`: Chroma distance (lower = more similar)
-- `snippet`: first 200 characters of the chunk
+- `score`: cross-encoder rerank score (higher = more relevant)
+- `snippet`: first 200 characters of the chunk or web extract
 
 ### `GET /health`
 Returns `{"status": "ok"}`.
@@ -102,11 +124,12 @@ Sources: page 12 (chunks 104, 106, 107), page 14 (chunks 115-117)
 
 Sources: page 5 (section "D. RAG vs Fine-tuning"), pages 1-2, page 14
 
-**5. Who won the 2022 FIFA World Cup?** (out of scope)
-> I could not find this in the document.
-
-The retrieved chunks have high distance scores (about 1.7-1.8, versus about 0.5-0.7 for in-scope
-questions), so the model correctly refuses instead of answering from outside knowledge.
+**5. Who won the 2022 FIFA World Cup?** (out of scope for the PDF)
+> Before the optional features, the app answered "I could not find this in the document." Now the
+> reranker's top score falls below `RERANK_MIN_SCORE`, the graph routes to the web tool, the LLM calls
+> `search_wikipedia`, and the answer is labelled "Not found in the PDF - based on Wikipedia" with the
+> article URL in `sources` (`"route": "web"`). Set `WEB_FALLBACK=false` to restore the strict
+> PDF-only refusal.
 
 ## Model Choices and Reasons
 - **Embeddings: `all-MiniLM-L6-v2` (normalized)** - small, fast, free and runs locally on CPU.
@@ -120,6 +143,12 @@ questions), so the model correctly refuses instead of answering from outside kno
   are added to the context so a matched heading comes with its body text.
 - **LLM: `openai/gpt-oss-20b` via Groq** - free tier and fast. Groq retired Llama 3.1 8B for free
   accounts, so the model is configurable through `LLM_MODEL` in `.env`. Temperature is 0 for factual answers.
+- **Hybrid search (BM25 + dense, RRF):** dense embeddings capture meaning but can miss exact terms such as
+  "RAGAS" or "HyDE"; BM25 does the opposite. Reciprocal Rank Fusion merges both rankings without needing to
+  normalise their different score scales.
+- **Reranker: `cross-encoder/ms-marco-MiniLM-L-6-v2`** - reads question and chunk together, so it is more precise
+  than bi-encoder similarity. It only scores a shortlist of about 15 chunks, so latency stays low. It also provides
+  the confidence score used for routing.
 - **Prompt** restricts the LLM to the retrieved context and asks for a refusal when the answer is not
   there, which reduces hallucination.
 
@@ -130,22 +159,43 @@ questions), so the model correctly refuses instead of answering from outside kno
   and added neighbor-chunk expansion. The answer then covered the full comparison from the survey.
 
 ## Optional Features Implemented
-- **Caching:** repeated questions are served from an in-memory cache.
-- **LangSmith tracing:** set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` in `.env` to trace each LLM call.
-- **Evaluation metrics:** `python evaluate.py` measures retrieval quality with Hit Rate@k and MRR on 6 hand-labelled questions. A hit means one of the top-6 chunks comes from a page that contains the answer.
+| Feature | Where | How it works |
+|---|---|---|
+| LangGraph workflow | `app/graph.py` | 5-node graph (retrieve, rerank, build_context, web_search, generate) with a conditional edge that routes on reranker confidence |
+| Hybrid search | `app/retrieval.py` | BM25 + Chroma dense search fused with Reciprocal Rank Fusion |
+| Reranking | `app/retrieval.py` | Cross-encoder rescoring of the fused shortlist; falls back to fused order if the model cannot load |
+| Tool calling | `app/graph.py` | The LLM is bound to the `search_wikipedia` tool and chooses the search query itself |
+| Web API tool usage | `app/tools.py` | Wikipedia public API (no key), with timeouts and graceful failure |
+| Caching | `app/graph.py` | In-memory LRU cache (size `CACHE_SIZE`, default 256) for repeated questions |
+| Evaluation metrics | `evaluate.py` | Hit Rate@k and MRR for dense vs hybrid vs hybrid + rerank, plus a routing check |
+| LangSmith tracing | `.env` | Set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY`; each request appears as a `pdf_rag_ask` run with a span per graph node |
 
-Results: Hit Rate@6 = 1.00 (6/6), MRR = 0.72. This is a small evaluation set with page-level matching, so it is a sanity check rather than a full benchmark.  
+### Evaluation
+```bash
+python evaluate.py     # compares dense-only vs hybrid vs hybrid + rerank on 9 labelled questions
+pytest -q              # offline tests with stubbed models (no API key or downloads needed)
+```
+Baseline measured before the optional features (dense search only, 6 questions): Hit Rate@6 = 1.00, MRR = 0.72.
+The script now reports the same two metrics for all three retrieval modes on a 9-question set, so the effect of
+hybrid search and reranking can be read directly from its output. It is a small, page-level sanity check rather
+than a full benchmark.
+
+`evaluate.py` also prints the top rerank score for in-scope and out-of-scope questions. If questions are routed to
+the wrong place, set `RERANK_MIN_SCORE` in `.env` to a value between those two scores.
 
 ## Limitations
 - Single PDF, indexed at startup; there is no upload endpoint.
 - Tables, figures and equations are poorly extracted by text-only parsing.
-- Dense retrieval only (no hybrid/BM25 search and no reranking), so some section-level questions can
-  still retrieve loosely related chunks.
+- The web fallback depends on `RERANK_MIN_SCORE`, which is a heuristic threshold that should be calibrated with
+  `python evaluate.py`. A wrong value sends in-scope questions to the web or keeps out-of-scope ones in the PDF route.
+- Web answers rely on Wikipedia's top search hits and intro extracts only, so they are shallow and can be off-topic.
+- The reranker adds a second model to load and some latency per uncached question.
+- The cache is in-process memory: it is lost on restart and not shared between workers.
 - The `sources` list shows the top-k matched chunks; the neighbor chunks that also fed the answer
   are not listed.
 - The small LLM occasionally adds minor inferences that are not stated in the context.
 - No conversation memory; each question is independent.
-- Evaluation covers retrieval only (6 questions); answer quality is not scored automatically.
+- Evaluation covers retrieval only (9 questions, page-level matching); answer quality is not scored automatically.
 
 ## Author
 Pragnya Amminabhavi
