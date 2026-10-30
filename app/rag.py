@@ -35,6 +35,7 @@ Answer:"""
 _embeddings = None
 _vectorstore = None
 _chain = None
+_llm = None
 
 
 def get_embeddings():
@@ -92,15 +93,22 @@ def _format_docs(docs):
     return "\n\n".join(f"[Page {d.metadata['page']}] {d.page_content}" for d in docs)
 
 
+def get_llm() -> ChatGroq:
+    global _llm
+    if _llm is None:
+        _llm = ChatGroq(model=LLM_MODEL, temperature=0)
+    return _llm
+
+
 def get_chain():
+    """Document-QA chain: prompt -> LLM -> string."""
     global _chain
     if _chain is None:
-        llm = ChatGroq(model=LLM_MODEL, temperature=0)
-        _chain = PROMPT | llm | StrOutputParser()
+        _chain = PROMPT | get_llm() | StrOutputParser()
     return _chain
 
 
-def _expand_with_neighbors(results, top_n=3, window=3):
+def expand_with_neighbors(results, top_n=3, window=3):
     """Add the chunks before/after the top_n best matches, in document order."""
     wanted = {d.metadata["chunk_id"] for d, _ in results}
     for d, _ in results[:top_n]:
@@ -112,29 +120,3 @@ def _expand_with_neighbors(results, top_n=3, window=3):
         for t, m in zip(got["documents"], got["metadatas"])
     ]
     return sorted(docs, key=lambda d: d.metadata["chunk_id"])
-
-
-def _answer_uncached(question: str) -> dict:
-    results = get_vectorstore().similarity_search_with_score(question, k=TOP_K)
-    docs = _expand_with_neighbors(results)
-    answer = get_chain().invoke({"context": _format_docs(docs), "question": question})
-    sources = [
-        {
-            "page": d.metadata["page"],
-            "chunk_id": d.metadata["chunk_id"],
-            "score": round(float(score), 4),  # Chroma distance: lower = more similar
-            "snippet": d.page_content[:200].replace("\n", " ") + "...",
-        }
-        for d, score in results
-    ]
-    return {"answer": answer, "sources": sources}
-
-_answer_cache: dict[str, dict] = {}
-
-
-def answer_question(question: str) -> dict:
-    """Return a cached answer for repeated questions, otherwise run the full pipeline."""
-    key = question.strip().lower()
-    if key not in _answer_cache:
-        _answer_cache[key] = _answer_uncached(question)
-    return _answer_cache[key]

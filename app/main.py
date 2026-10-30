@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
+from typing import Literal, Optional
 from pydantic import BaseModel, Field
-from app.rag import answer_question, get_vectorstore
+from app.rag import get_vectorstore
+from app.graph import answer_question
 
 
 @asynccontextmanager
@@ -18,14 +20,20 @@ class AskRequest(BaseModel):
 
 
 class Source(BaseModel):
-    page: int
-    chunk_id: int
-    score: float
+    type: Literal["document", "web"] = "document"
+    # document sources
+    page: Optional[int] = None
+    chunk_id: Optional[int] = None
+    score: Optional[float] = None  # cross-encoder rerank score (higher = more relevant)
+    # web sources
+    title: Optional[str] = None
+    url: Optional[str] = None
     snippet: str
 
 
 class AskResponse(BaseModel):
     answer: str
+    route: Literal["document", "web"]  # where the answer came from
     sources: list[Source]
 
 
