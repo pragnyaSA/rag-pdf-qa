@@ -11,3 +11,7 @@ langchain-groq
 sentence-transformers
 pypdf
 chromadb
+rank-bm25
+langgraph
+requests
+pytest
