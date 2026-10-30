@@ -24,7 +24,7 @@ Question -> embed -> top-k similarity search -> add neighboring chunks -> prompt
 
 ## Setup
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/pragnyaSA/rag-pdf-qa.git
 cd rag-pdf-qa
 python -m venv venv
 # Windows: venv\Scripts\activate      Mac/Linux: source venv/bin/activate
@@ -139,3 +139,6 @@ questions), so the model correctly refuses instead of answering from outside kno
 - The small LLM occasionally adds minor inferences that are not stated in the context.
 - No conversation memory; each question is independent.
 - No automated evaluation metrics yet.
+
+## Author
+Pragnya Amminabhavi
