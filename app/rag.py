@@ -114,7 +114,7 @@ def _expand_with_neighbors(results, top_n=3, window=3):
     return sorted(docs, key=lambda d: d.metadata["chunk_id"])
 
 
-def answer_question(question: str) -> dict:
+def _answer_uncached(question: str) -> dict:
     results = get_vectorstore().similarity_search_with_score(question, k=TOP_K)
     docs = _expand_with_neighbors(results)
     answer = get_chain().invoke({"context": _format_docs(docs), "question": question})
@@ -128,3 +128,13 @@ def answer_question(question: str) -> dict:
         for d, score in results
     ]
     return {"answer": answer, "sources": sources}
+
+_answer_cache: dict[str, dict] = {}
+
+
+def answer_question(question: str) -> dict:
+    """Return a cached answer for repeated questions, otherwise run the full pipeline."""
+    key = question.strip().lower()
+    if key not in _answer_cache:
+        _answer_cache[key] = _answer_uncached(question)
+    return _answer_cache[key]
