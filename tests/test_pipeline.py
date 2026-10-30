@@ -98,6 +98,8 @@ def test_in_scope_question_uses_document_route(stubbed):
     assert out["route"] == "document"
     assert out["answer"] == "LLM_ANSWER"
     assert all(s["type"] == "document" and s["page"] for s in out["sources"])
+    # every matched chunk is part of the context that was sent to the LLM
+    assert {s["chunk_id"] for s in out["sources"]} <= set(out["context_chunk_ids"])
     assert stubbed == []  # web tool never called
 
 
@@ -106,6 +108,7 @@ def test_out_of_scope_question_uses_web_tool_calling(stubbed):
     assert out["route"] == "web"
     assert stubbed == ["paris capital"]  # query chosen by the LLM's tool call
     assert out["sources"][0]["type"] == "web" and out["sources"][0]["url"].startswith("https://")
+    assert out["context_chunk_ids"] == []
 
 
 def test_web_fallback_can_be_disabled(monkeypatch):
@@ -146,6 +149,7 @@ def test_ask_endpoint_contract():
         r = client.post("/ask", json={"question": "What are the three paradigms of RAG?"})
         assert r.status_code == 200
         body = r.json()
-        assert set(body) == {"answer", "route", "sources"}
+        assert set(body) == {"answer", "route", "sources", "context_chunk_ids"}
+        assert "title" not in body["sources"][0]  # null fields are omitted
         assert body["sources"][0]["page"] >= 1
         assert client.post("/ask", json={"question": "hi"}).status_code == 422

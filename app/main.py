@@ -34,7 +34,8 @@ class Source(BaseModel):
 class AskResponse(BaseModel):
     answer: str
     route: Literal["document", "web"]  # where the answer came from
-    sources: list[Source]
+    sources: list[Source]  # best-matching chunks (or web pages)
+    context_chunk_ids: list[int] = []  # every chunk sent to the LLM, incl. neighbor chunks
 
 
 @app.get("/health")
@@ -42,7 +43,7 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/ask", response_model=AskResponse)
+@app.post("/ask", response_model=AskResponse, response_model_exclude_none=True)
 def ask(req: AskRequest):
     try:
         return answer_question(req.question)

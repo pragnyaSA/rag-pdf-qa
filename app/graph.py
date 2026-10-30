@@ -59,6 +59,7 @@ class RAGState(TypedDict, total=False):
     route: str  # "document" | "web"
     context: str
     sources: list[dict]
+    context_chunk_ids: list[int]
     prompt_kind: str
     answer: str
 
@@ -95,7 +96,13 @@ def build_context_node(state: RAGState) -> dict:
         }
         for d, score in ranked
     ]
-    return {"route": "document", "context": _format_docs(docs), "sources": sources, "prompt_kind": "document"}
+    return {
+        "route": "document",
+        "context": _format_docs(docs),
+        "sources": sources,
+        "context_chunk_ids": [d.metadata["chunk_id"] for d in docs],
+        "prompt_kind": "document",
+    }
 
 
 def web_search_node(state: RAGState) -> dict:
@@ -166,7 +173,12 @@ def _answer_uncached(question: str) -> dict:
         {"question": question},
         config={"run_name": "pdf_rag_ask", "tags": ["pdf-rag", "langgraph"]},
     )
-    return {"answer": out["answer"], "route": out["route"], "sources": out["sources"]}
+    return {
+        "answer": out["answer"],
+        "route": out["route"],
+        "sources": out["sources"],
+        "context_chunk_ids": out.get("context_chunk_ids", []),
+    }
 
 
 def answer_question(question: str) -> dict:

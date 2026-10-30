@@ -20,9 +20,11 @@ def wikipedia_search(query: str, limit: int = 2) -> list[dict]:
         "prop": "extracts|info",
         "exintro": 1,
         "explaintext": 1,
-        "exchars": 900,
         "inprop": "url",
-    }
+    }    
+        
+       
+    
     try:
         resp = requests.get(WIKI_API, params=params, headers=HEADERS, timeout=8)
         resp.raise_for_status()
@@ -32,7 +34,7 @@ def wikipedia_search(query: str, limit: int = 2) -> list[dict]:
         return []
     ordered = sorted(pages.values(), key=lambda p: p.get("index", 0))
     return [
-        {"title": p["title"], "url": p.get("fullurl", ""), "extract": p.get("extract", "").strip()}
+            {"title": p["title"], "url": p.get("fullurl", ""), "extract": p.get("extract", "").strip()[:2500]}
         for p in ordered
         if p.get("extract")
     ]
