@@ -192,6 +192,8 @@ Results on 9 hand-labelled questions (a hit means one of the top-6 chunks comes 
 | Hybrid (BM25 + dense, RRF) | 1.00 | 0.91 |
 | Hybrid + rerank | 1.00 | 0.81 |
 
+Answer check (`python evaluate.py --answers`): 9/9 in-scope answers pass (from the PDF route, with the expected facts), and 2/2 out-of-scope questions are sent to the web tool.
+
 - Hybrid search improved MRR from 0.74 to 0.91, so the first relevant chunk is usually ranked first or second.
 - The cross-encoder did **not** improve MRR on this set (0.91 to 0.81). Matching is at page level, which is coarse,
   and the ms-marco model is trained on web passages, so it sometimes prefers a chunk from a neighboring page.
