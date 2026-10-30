@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 venv/
 .venv/
+
+answer_cache.json
+answer_cache.json.tmp

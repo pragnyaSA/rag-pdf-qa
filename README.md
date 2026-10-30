@@ -173,14 +173,15 @@ refusal ("I could not find this in the document.").
 | Reranking | `app/retrieval.py` | Cross-encoder rescoring of the fused shortlist; falls back to fused order if the model cannot load |
 | Tool calling | `app/graph.py` | The LLM is bound to the `search_wikipedia` tool and chooses the search query itself |
 | Web API tool usage | `app/tools.py` | Wikipedia public API (no key), with timeouts and graceful failure |
-| Caching | `app/graph.py` | In-memory LRU cache (size `CACHE_SIZE`, default 256) for repeated questions |
-| Evaluation metrics | `evaluate.py` | Hit Rate@k and MRR for dense vs hybrid vs hybrid + rerank, plus a routing check |
+| Caching | `app/graph.py` | LRU cache (size `CACHE_SIZE`, default 256) for repeated questions, saved to `answer_cache.json` so it survives restarts; `python ingest.py` clears it because cached answers belong to the old index |
+| Evaluation metrics | `evaluate.py` | Hit Rate@k and MRR for dense vs hybrid vs hybrid + rerank, a routing check, and an optional answer-level keyword check (`--answers`) |
 | LangSmith tracing | `.env` | Set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY`; each request appears as a `pdf_rag_ask` run with a span per graph node |
 
 ### Evaluation
 ```bash
-python evaluate.py     # compares dense-only vs hybrid vs hybrid + rerank on 9 labelled questions
-pytest -q              # 11 offline tests with stubbed models (no API key or downloads needed)
+python evaluate.py             # retrieval: dense-only vs hybrid vs hybrid + rerank on 9 labelled questions, plus routing check
+python evaluate.py --answers   # also checks the generated answers contain the expected facts (calls the LLM)
+pytest -q                      # 13 offline tests with stubbed models (no API key or downloads needed)
 ```
 
 Results on 9 hand-labelled questions (a hit means one of the top-6 chunks comes from a page that contains the answer):
@@ -198,21 +199,24 @@ Results on 9 hand-labelled questions (a hit means one of the top-6 chunks comes 
   highest for an out-of-scope question was -10.86, so `RERANK_MIN_SCORE=-2.0` separated them cleanly
   (9/9 sent to the PDF, 2/2 sent to the web).
 
+- The reranker is a second model that adds some latency to each uncached question (it scores about 15 chunks);
+  repeated questions skip it through the cache.
+- `--answers` adds an end-to-end check: each in-scope answer must come from the PDF route and mention the expected
+  facts (for example "Naive", "Advanced" and "Modular" for the paradigms question), and out-of-scope questions must
+  be sent to the web tool. It is a coarse keyword check, not a replacement for human review.
+
 This is a small sanity check, not a full benchmark.
 
 ## Limitations
-- Single PDF, indexed at startup; there is no upload endpoint. Using another PDF means changing `PDF_PATH` and re-running `python ingest.py`.
-- Tables, figures and equations are poorly extracted by text-only parsing.
-- Routing uses a score threshold (`RERANK_MIN_SCORE`) calibrated on only 9 in-scope and 2 out-of-scope questions.
-  The gap was wide, but questions that are loosely related to the PDF could still land near the threshold.
-- Web answers rely on Wikipedia's top search hits and introduction text, so they are shallow and sometimes include
-  loosely related articles (the World Cup answer also returned a 2026 article).
-- The reranker did not improve ranking on the evaluation set and adds a second model and some latency per
-  uncached question.
-- The cache is in-process memory: it is lost on restart and not shared between workers.
-- The small LLM occasionally adds minor inferences that are not stated in the context.
-- No conversation memory; each question is independent.
-- Evaluation covers retrieval only (9 questions, page-level matching); answer quality is not scored automatically.
+- **Scope:** one PDF, indexed at startup (to use another, change `PDF_PATH` and run `python ingest.py`); there is no
+  upload endpoint and no conversation memory, so every question is answered independently.
+- **PDF parsing:** tables, figures and equations are poorly extracted by text-only parsing.
+- **Web fallback:** answers rely on Wikipedia's top search hits and introduction text, so they are shallow and can
+  include loosely related articles (the World Cup answer also returned a 2026 article).
+- **LLM:** the small model occasionally adds minor inferences that are not stated in the context.
+- **Evaluation size:** 9 in-scope and 2 out-of-scope questions with page-level matching and keyword answer checks.
+  The routing threshold (`RERANK_MIN_SCORE`) separated them with a wide gap, but questions that are only loosely
+  related to the PDF could still land near it.
 
 ## Author
 Pragnya Amminabhavi

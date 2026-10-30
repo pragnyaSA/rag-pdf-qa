@@ -64,6 +64,7 @@ def stubbed(tmp_path, monkeypatch):
     monkeypatch.setattr(retrieval, "_reranker", FakeCrossEncoder())
     monkeypatch.setattr(graph, "get_llm", lambda: FakeLLM())
     monkeypatch.setattr(graph, "_graph", None)
+    monkeypatch.setattr(graph, "CACHE_FILE", str(tmp_path / "cache.json"))
     graph._cache.clear()
     calls = []
     monkeypatch.setattr(
@@ -127,6 +128,18 @@ def test_cache_returns_same_object_and_skips_pipeline(monkeypatch):
     monkeypatch.setattr(graph, "_graph", None)
     monkeypatch.setattr(graph, "build_graph", lambda: pytest.fail("pipeline re-ran"))
     assert graph.answer_question("  WHAT ARE THE THREE PARADIGMS OF RAG?  ") is first
+
+
+def test_cache_persists_across_restarts():
+    first = graph.answer_question("What are the three paradigms of RAG?")
+    graph._cache.clear()  # simulate a process restart
+    reloaded = graph._load_cache()
+    assert reloaded["what are the three paradigms of rag?"] == first
+
+
+def test_corrupt_cache_file_is_ignored(tmp_path):
+    (tmp_path / "cache.json").write_text("{not json")
+    assert len(graph._load_cache()) == 0
 
 
 def test_cache_is_bounded(monkeypatch):

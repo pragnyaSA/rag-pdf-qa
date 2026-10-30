@@ -1,6 +1,7 @@
 """Retrieval evaluation: compares dense-only, hybrid (BM25 + dense) and hybrid + rerank.
 
-Run: python evaluate.py
+Run: python evaluate.py            (retrieval metrics + routing check, no API key needed)
+     python evaluate.py --answers  (also checks the generated answers; calls the LLM about 11 times)
 
 Metrics (on a small hand-labelled set; a 'hit' = any top-k chunk comes from an expected page):
   - Hit Rate@k : fraction of questions with at least one relevant chunk in the top k
@@ -9,6 +10,9 @@ Metrics (on a small hand-labelled set; a 'hit' = any top-k chunk comes from an e
 It also prints the top rerank score for out-of-scope questions so RERANK_MIN_SCORE
 (the threshold that sends a question to the web tool) can be calibrated.
 """
+import re
+import sys
+
 from app.graph import RERANK_MIN_SCORE
 from app.rag import TOP_K, get_vectorstore
 from app.retrieval import dense_search, hybrid_search, rerank
@@ -32,6 +36,20 @@ OUT_OF_SCOPE = [
     "What is the capital of France?",
 ]
 
+# Facts a correct answer must mention. A tuple means "any one of these is fine".
+# This is a coarse, deterministic check, not a full answer-quality benchmark.
+ANSWER_KEYWORDS = {
+    "What is Retrieval-Augmented Generation?": ["retriev", "external"],
+    "What are the three paradigms of RAG?": ["naive", "advanced", "modular"],
+    "How is RAG different from fine-tuning?": ["fine-tun", "retriev"],
+    "What are the three quality scores used to evaluate RAG?": ["context relevance", "faithfulness", "answer relevance"],
+    "Which tools are used to evaluate RAG?": ["ragas", "ares", "trulens"],
+    "What is the lost in the middle problem?": ["middle", "context"],
+    "What is HyDE?": ["hypothetical"],
+    "How does Self-RAG decide when to retrieve?": ["token"],
+    "What chunk sizes are commonly used for splitting documents?": [("100", "256", "512")],
+}
+
 MODES = {
     "dense only": lambda q: [d for d in dense_search(q, k=TOP_K)],
     "hybrid (BM25 + dense, RRF)": lambda q: hybrid_search(q)[:TOP_K],
@@ -53,6 +71,40 @@ def evaluate(retrieve, verbose=False):
     return hits / n, rr_sum / n
 
 
+def _normalize(text: str) -> str:
+    """Lowercase and turn Unicode hyphens/dashes (e.g. U+2011) into a plain '-'."""
+    text = text.lower().replace("\u00ad", "")  # soft hyphen: invisible, just drop it
+    return re.sub(r"[\u2010-\u2015\u2212]", "-", text)
+
+
+def check_answers():
+    """End-to-end check: in-scope answers must mention the expected facts, out-of-scope ones must use the web."""
+    from app.graph import answer_question  # imported here so the retrieval-only run needs no API key
+
+    passed = 0
+    print("\nAnswer check (in-scope questions must contain the expected facts):")
+    for question, _ in EVAL_SET:
+        out = answer_question(question)
+        text = _normalize(out["answer"])
+        missing = [
+            g for g in ANSWER_KEYWORDS[question]
+            if not any(alt in text for alt in (g if isinstance(g, tuple) else (g,)))
+        ]
+        ok = out["route"] == "document" and not missing
+        passed += ok
+        print(f"  {'PASS' if ok else 'FAIL'} route={out['route']} missing={missing} | {question}")
+        if not ok:
+            print(f"       answer: {out['answer'][:300]!r}")
+    print(f"  In-scope answers passing: {passed}/{len(EVAL_SET)}")
+
+    routed = 0
+    for question in OUT_OF_SCOPE:
+        out = answer_question(question)
+        routed += out["route"] == "web"
+        print(f"  {'PASS' if out['route'] == 'web' else 'FAIL'} route={out['route']} | {question}")
+    print(f"  Out-of-scope questions sent to the web tool: {routed}/{len(OUT_OF_SCOPE)}")
+
+
 def main():
     get_vectorstore()
     print(f"{len(EVAL_SET)} questions, k={TOP_K}\n")
@@ -72,6 +124,9 @@ def main():
     print(f"  out-of-scope top score max={max(out_scope):.2f}  -> routed to web:      "
           f"{sum(s < RERANK_MIN_SCORE for s in out_scope)}/{len(out_scope)}")
     print("  Pick a threshold between those two values if routing looks wrong.")
+
+    if "--answers" in sys.argv:
+        check_answers()
 
 
 if __name__ == "__main__":

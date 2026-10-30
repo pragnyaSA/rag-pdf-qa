@@ -9,6 +9,7 @@ If the best reranked chunk scores below RERANK_MIN_SCORE the PDF probably does n
 contain the answer, so the LLM is given a Wikipedia search tool (tool calling) and the
 answer is clearly labelled as coming from the web instead of the PDF.
 """
+import json
 import os
 from collections import OrderedDict
 from typing import Optional, TypedDict
@@ -28,6 +29,7 @@ from app.tools import search_wikipedia, wikipedia_search
 RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", -2.0))
 WEB_FALLBACK = os.getenv("WEB_FALLBACK", "true").lower() == "true"
 CACHE_SIZE = int(os.getenv("CACHE_SIZE", 256))
+CACHE_FILE = os.getenv("CACHE_FILE", "answer_cache.json")  # survives restarts; deleted by ingest.py
 
 NOT_FOUND = "I could not find this in the document."
 
@@ -161,7 +163,28 @@ def build_graph():
 
 
 _graph = None
-_cache: "OrderedDict[str, dict]" = OrderedDict()
+
+
+def _load_cache() -> "OrderedDict[str, dict]":
+    """Read the on-disk cache; any problem (missing/corrupt file) just means an empty cache."""
+    try:
+        with open(CACHE_FILE, encoding="utf-8") as f:
+            return OrderedDict(json.load(f))
+    except Exception:
+        return OrderedDict()
+
+
+def _save_cache() -> None:
+    try:
+        tmp = CACHE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_cache, f, ensure_ascii=False)
+        os.replace(tmp, CACHE_FILE)  # atomic: a crash never leaves a half-written file
+    except Exception as e:
+        print(f"[warn] could not save cache: {e}")
+
+
+_cache: "OrderedDict[str, dict]" = _load_cache()
 
 
 def _answer_uncached(question: str) -> dict:
@@ -182,7 +205,7 @@ def _answer_uncached(question: str) -> dict:
 
 
 def answer_question(question: str) -> dict:
-    """Run the graph, with a bounded LRU cache for repeated questions."""
+    """Run the graph, with a bounded LRU cache (persisted to disk) for repeated questions."""
     key = question.strip().lower()
     if key in _cache:
         _cache.move_to_end(key)
@@ -191,4 +214,5 @@ def answer_question(question: str) -> dict:
     _cache[key] = result
     if len(_cache) > CACHE_SIZE:
         _cache.popitem(last=False)
+    _save_cache()
     return result
