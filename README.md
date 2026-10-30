@@ -129,6 +129,13 @@ questions), so the model correctly refuses instead of answering from outside kno
 - Fixes: removed the bibliography from the index, reduced chunks to 700/150, normalized the embeddings,
   and added neighbor-chunk expansion. The answer then covered the full comparison from the survey.
 
+## Optional Features Implemented
+- **Caching:** repeated questions are served from an in-memory cache.
+- **LangSmith tracing:** set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` in `.env` to trace each LLM call.
+- **Evaluation metrics:** `python evaluate.py` measures retrieval quality with Hit Rate@k and MRR on 6 hand-labelled questions. A hit means one of the top-6 chunks comes from a page that contains the answer.
+
+Results: Hit Rate@6 = 1.00 (6/6), MRR = 0.72. This is a small evaluation set with page-level matching, so it is a sanity check rather than a full benchmark.  
+
 ## Limitations
 - Single PDF, indexed at startup; there is no upload endpoint.
 - Tables, figures and equations are poorly extracted by text-only parsing.
@@ -138,7 +145,7 @@ questions), so the model correctly refuses instead of answering from outside kno
   are not listed.
 - The small LLM occasionally adds minor inferences that are not stated in the context.
 - No conversation memory; each question is independent.
-- No automated evaluation metrics yet.
+- Evaluation covers retrieval only (6 questions); answer quality is not scored automatically.
 
 ## Author
 Pragnya Amminabhavi
